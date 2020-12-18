@@ -22,12 +22,13 @@ import LineChart.Coordinate as Coordinate
 import LineChart.Interpolation as Interpolation
 import LineChart.Axis.Intersection as Intersection
 import Browser
-import Html exposing (p, text)
-import Html.Attributes exposing (style)
+import Html exposing (p, text, input)
+import Html.Attributes exposing (style, placeholder, value)
+import Html.Events exposing (onInput)
 import Csv
-import Time
-import Result.Extra exposing (combineMap)
-import Date exposing (fromPosix, toIsoString)
+import Time exposing (Posix,utc,millisToPosix,posixToMillis)
+import Iso8601 exposing (fromTime, toTime)
+import List.Extra exposing (find)
 
 main : Program () Model Msg
 main =
@@ -49,23 +50,26 @@ type alias Model =
     , compound : Result String Data
     , factor: Float
     , offset: Float
-    , hovered : Maybe Float
-    , selection : Maybe Selection
+    , hovered : Maybe Datum
+    , selection : Selection
     , dragging : Bool
     , hinted : Maybe Datum
+    , startString : String
+    , endString: String
+    , btcS: String
     }
 
 
 type alias Selection =
-  { start : Float
-  , end : Float
+  { start : Maybe Datum
+  , end : Maybe Datum
   }
 
 
 type alias Data = List Datum
 
 type alias Datum =
-  {   time: Time.Posix
+  {   time: Posix
     , co2 : Float
   }
 
@@ -73,6 +77,8 @@ type alias Datum =
 
 -- INIT
 
+emptySelection: Selection
+emptySelection = {start=Nothing,end=Nothing}
 
 init : ( Model, Cmd Msg )
 init =
@@ -82,9 +88,12 @@ init =
     , factor = 1.34 --ktCo2/day/Twh/year
     , offset = 0.1 -- MtCo2
     , hovered = Nothing
-    , selection = Nothing
+    , selection = emptySelection
     , dragging = False
     , hinted = Nothing
+    , startString="YYYY-MM-DD"
+    , endString="YYYY-MM-DD"
+    , btcS=""
     }
   , Http.get
       { url = "https://cbeci.org/api/csv"
@@ -98,7 +107,7 @@ init =
 -- API
 
 
-setSelection : Maybe Selection -> Model -> Model
+setSelection : Selection -> Model -> Model
 setSelection selection model =
   { model | selection = selection }
 
@@ -108,7 +117,7 @@ setDragging dragging model =
   { model | dragging = dragging }
 
 
-setHovered : Maybe Float -> Model -> Model
+setHovered : Maybe Datum -> Model -> Model
 setHovered hovered model =
   { model | hovered = hovered }
 
@@ -117,12 +126,16 @@ setHint : Maybe Datum -> Model -> Model
 setHint hinted model =
   { model | hinted = hinted }
 
-getSelectionStart : Float -> Model -> Float
+getSelectionStart : Datum -> Model -> Datum
 getSelectionStart hovered model =
-  case model.selection of
-    Just selection -> selection.start
-    Nothing        -> hovered
+  case model.selection.start of
+    Just s ->  s
+    Nothing -> hovered
 
+setSelectionString start end model =
+  { model | startString = start |> datumToTimeString
+          , endString   = end |> datumToTimeString
+  }
 
 
 -- UPDATE
@@ -131,14 +144,16 @@ getSelectionStart hovered model =
 type Msg
   = GotText (Result Http.Error String)
   -- Chart 1
-  | Hold Coordinate.Point
-  | Move Coordinate.Point
-  | Drop Coordinate.Point
-  | LeaveChart Coordinate.Point
-  | LeaveContainer Coordinate.Point
+  | Hold (Maybe Datum)
+  | Move (Maybe Datum)
+  | Drop (Maybe Datum)
+  | LeaveChart (Maybe Datum)
+  | LeaveContainer (Maybe Datum)
   -- Chart 2
   | Hint (Maybe Datum)
-
+  | ChangeStart String
+  | ChangeEnd String
+  | ChangeBtc String
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
@@ -146,10 +161,21 @@ update msg model =
     GotText result ->
       case result of
         Ok content ->
-            ( let nd = parseData content model.factor in
+            ( let nd = parseData content model.factor
+                  cp = mkcompound nd
+                  s = Result.withDefault Nothing <| Result.map List.head cp
+                  e = Result.withDefault Nothing <| Result.map
+                      (\l -> List.head <| List.drop (List.length l - 1) l) cp
+                  dTS = Maybe.withDefault "YYYY-MM-DD" << Maybe.map datumToTimeString
+              in
               { model | csv = Just content
                       , data = nd
-                      , compound = mkcompound nd
+                      , compound = cp
+                      , selection = { start = s
+                                    , end = e
+                                    }
+                      , startString = dTS s
+                      , endString = dTS e
               }
             , Cmd.none
             )
@@ -159,29 +185,30 @@ update msg model =
 
     Hold point ->
       model
-        |> setSelection Nothing
+        |> setSelection emptySelection
         |> setDragging True
         |> addCmd Cmd.none
 
-    Move point ->
+    Move (Just point) ->
       if model.dragging then
         let
-          start = getSelectionStart point.x model
-          newSelection = Selection start point.x
+          start = getSelectionStart point model
+          newSelection = Selection (Just start) (Just point)
         in
         model
-          |> setSelection (Just newSelection)
-          |> setHovered (Just point.x)
+          |> setSelection newSelection
+          |> setSelectionString start point
+          |> setHovered (Just point)
           |> addCmd Cmd.none
       else
         model
-          |> setHovered (Just point.x)
+          |> setHovered (Just point)
           |> addCmd Cmd.none
 
-    Drop point ->
-      if point.x == getSelectionStart point.x model then
+    Drop (Just point) ->
+        if point == getSelectionStart point model then
         model
-          |> setSelection Nothing
+          |> setSelection emptySelection
           |> setDragging False
           |> addCmd Cmd.none
       else
@@ -205,6 +232,30 @@ update msg model =
         |> setHint point
         |> addCmd Cmd.none
 
+    ChangeStart timeString -> addCmd Cmd.none <| case model.compound of
+        Err _ -> model
+        Ok ls -> let selection=model.selection in
+            { model | startString = timeString
+                    , selection= case toTime timeString of
+                        Ok ts -> {selection | start=find (\d->d.time==ts) ls}
+                        Err _ -> selection
+            }
+
+    ChangeEnd timeString -> addCmd Cmd.none <| case model.compound of
+        Err _ -> model
+        Ok ls -> let selection=model.selection in
+            { model | endString = timeString
+                    , selection= case toTime timeString of
+                Ok ts -> {selection | end=find (\d->d.time==ts) ls}
+                Err _ -> selection
+            }
+
+    ChangeBtc bS -> addCmd Cmd.none <|
+       {  model | btcS = bS }
+
+    _  ->
+        model  |> addCmd Cmd.none
+
 
 mkcompound : Result String Data -> Result String Data
 mkcompound nd = case nd of
@@ -222,16 +273,19 @@ addCmd cmd model =
 
 parseData: String -> Float -> Result String Data
 parseData s f = case Csv.parse s of
-                  Ok c  -> combineMap (parseRecord f) c.records
+                  Ok c  -> Ok (List.filterMap (parseRecord f) c.records)
                   Err _ -> Err "Toplevel parsing error"
 
-parseRecord : Float -> List String -> Result String Datum
+parseRecord : Float -> List String -> Maybe Datum
 parseRecord factor l = case l of
-                    [ts,dat,max,min,guess] -> Ok {time=Time.millisToPosix (1000 * Maybe.withDefault 0 (String.toInt ts)),
+                    [ts,dat,max,min,guess] -> let time=millisToPosix (1000 * Maybe.withDefault 0 (String.toInt ts))
                                                   co2=factor*Maybe.withDefault 0 (String.toFloat guess)
-                                                 }
+                                              in
+                                                 -- if Time.toWeekday Time.utc time == Time.Mon then
+                                                      Just { time=time, co2=co2 }
+                                                 -- else Nothing
 
-                    _                      -> Err "Parsing Error"
+                    _                      -> Nothing
 -- VIEW
 
 
@@ -244,16 +298,39 @@ view model =
 
     Just content ->
       [ p [ style "white-space" "pre" ] <|
-            case model.selection of
-                Nothing -> [ chart1 model
+            let s=model.startString
+                e=model.endString
+            in case (model.selection.start, model.selection.end) of
+                (Just startDatum, Just endDatum) ->
+                    let total = endDatum.co2-startDatum.co2 in
+                    [ chart1 model
+                    , chart2 model
+                    , text ("Please select or enter time interval: ")
+                    , input [ placeholder s, value s, onInput ChangeStart][]
+                    , input [ placeholder e, value e, onInput ChangeEnd][]
+                 --   , chartZoom model startDatum endDatum
+                    , text ("\nSelected: "++ datumToTimeString startDatum)
+                    , text (" to "++ datumToTimeString endDatum)
+                    , text ("\nTotal Co2 in this time frame: "
+                                ++ (String.fromFloat <| round100 <| total)
+                                ++ "Mt"
+                           )
+                    , text "\nHow much Bitcoin do you want to offset? "
+                    , input [ placeholder "0.00000001", value model.btcS, onInput ChangeBtc][]
+                    ] ++
+                    case String.toFloat model.btcS of
+                      Nothing -> []
+                      Just btc -> [ text ("\nThis is equivalent to "++(String.fromFloat <| round100 <| total*btc/21)
+                                       ++" t Co2.\nHappy offsetting, and don't forget to tell us, so we can keep count!") ]
+
+
+                _       -> [ chart1 model
                            , chart2 model
+                           , text "Please select or enter a time interval: "
+                           , input [ placeholder "start date", value s, onInput ChangeStart][]
+                           , input [ placeholder "end date", value e, onInput ChangeEnd][]
                            ]
 
-                Just selection ->
-                           [ chart1 model
-                           , chart2 model
-                           , chartZoom model selection
-                           ]
       ]
 
 
@@ -269,16 +346,13 @@ chart1 model = case model.data of
                                { y=yAxis1
                                , area = Area.normal 0.5
                                , range = Range.default
-                               , junk = junkConfig model
-                               , legends = Legends.default
-                               , events =
-                                   Events.custom
-                                       [ Events.onWithOptions "mousedown" (Events.Options True True False) Hold Events.getData
-                                       , Events.onWithOptions "mousemove" (Events.Options True True False) Move Events.getData
-                                       , Events.onWithOptions "mouseup"   (Events.Options True True True) Drop Events.getData
-                                       , Events.onWithOptions "mouseleave" (Events.Options True True False) LeaveChart Events.getData
-                                       , Events.onWithOptions "mouseleave" (Events.Options True True True) LeaveContainer Events.getData
+                               , junk =
+                                   Junk.hoverOne model.hinted
+                                       [ ( "date", datumToTimeString )
+                                       , ( "kt/d", String.fromFloat << round100 << .co2 )
                                        ]
+                               , events = Events.hoverOne Hint
+                               , legends = Legends.default
                                , dots = Dots.custom (Dots.full 0)
                                , id = "line-chart"
                                }
@@ -300,11 +374,11 @@ chart2 model = case model.compound of
                                , legends = Legends.default
                                , events =
                                    Events.custom
-                                       [ Events.onWithOptions "mousedown" (Events.Options True True False) Hold Events.getData
-                                       , Events.onWithOptions "mousemove" (Events.Options True True False) Move Events.getData
-                                       , Events.onWithOptions "mouseup"   (Events.Options True True True) Drop Events.getData
-                                       , Events.onWithOptions "mouseleave" (Events.Options True True False) LeaveChart Events.getData
-                                       , Events.onWithOptions "mouseleave" (Events.Options True True True) LeaveContainer Events.getData
+                                       [ Events.onWithOptions "mousedown" (Events.Options True True False) Hold Events.getNearest
+                                       , Events.onWithOptions "mousemove" (Events.Options True True False) Move Events.getNearest
+                                       , Events.onWithOptions "mouseup"   (Events.Options True True True) Drop Events.getNearest
+                                       , Events.onWithOptions "mouseleave" (Events.Options True True False) LeaveChart Events.getNearest
+                                       , Events.onWithOptions "mouseleave" (Events.Options True True True) LeaveContainer Events.getNearest
                                        ]
                                , dots = Dots.custom (Dots.full 0)
                                , id = "line-chart"
@@ -324,23 +398,23 @@ junkConfig model =
     }
 
 
-below : Coordinate.System -> Maybe Selection -> List (Svg.Svg msg)
+below : Coordinate.System -> Selection -> List (Svg.Svg msg)
 below system selection =
-  case selection of
-    Just { start, end } ->
+  case (selection.start, selection.end) of
+    ( Just startDatum, Just endDatum ) ->
       [ Junk.rectangle system [ Svg.Attributes.fill "#b6b6b61a" ]
-          start end system.y.min system.y.max
+          (datumToFloat startDatum) (datumToFloat endDatum) system.y.min system.y.max
       ]
 
-    Nothing ->
+    _ ->
       []
 
 
-above : Coordinate.System -> Maybe Float -> List (Svg.Svg msg)
+above : Coordinate.System -> Maybe Datum -> List (Svg.Svg msg)
 above system maybeHovered =
   case maybeHovered of
     Just hovered ->
-      [ Junk.vertical system [] hovered ]
+      [ Junk.vertical system [] (datumToFloat hovered) ]
 
     Nothing ->
       []
@@ -350,17 +424,17 @@ above system maybeHovered =
 -- ZOOM CHART
 
 
-chartZoom : Model -> Selection -> Html.Html Msg
-chartZoom model selection = case  model.compound of
+chartZoom : Model -> Datum -> Datum -> Html.Html Msg
+chartZoom model start end = case  model.compound of
                                 Ok data ->
                                     LineChart.viewCustom
                                         (chartConfig
-                                             { y=yAxis1
+                                             { y=yAxis2
                                              , area=Area.default
-                                             , range = xAxisRangeConfig selection
+                                             , range = xAxisRangeConfig start end
                                              , junk =
                                                  Junk.hoverOne model.hinted
-                                                     [ ( "date", toIsoString << fromPosix Time.utc << .time )
+                                                     [ ( "date", datumToTimeString )
                                                      , ( "Mt", String.fromFloat << round100 << .co2 )
                                                      ]
                                              , events = Events.hoverOne Hint
@@ -373,16 +447,18 @@ chartZoom model selection = case  model.compound of
                                 Err e -> text e
 
 
-xAxisRangeConfig : Selection -> Range.Config
-xAxisRangeConfig selection =
+xAxisRangeConfig : Datum -> Datum -> Range.Config
+xAxisRangeConfig startDatum endDatum =
   let
+    s=datumToFloat startDatum
+    e=datumToFloat endDatum
     start =
-      min selection.start selection.end
+      min s e
 
     end =
-      if selection.start == selection.end
-        then selection.start + 1
-        else max selection.start selection.end
+      if s == e
+        then s + 1
+        else max s e
   in
   Range.window start end
 
@@ -408,7 +484,7 @@ chartConfig: Config -> LineChart.Config Datum Msg
 chartConfig { y, range, junk, events, legends, dots, id, area } =
     { y = y
     , x = xAxis range
-     , container =
+    , container =
         Container.custom
           { attributesHtml = [ Html.Attributes.style "font-family" "monospace" ]
           , attributesSvg = []
@@ -441,15 +517,18 @@ xAxis range = Axis.custom
           , pixels = 1200
           , range = range
           , axisLine = AxisLine.rangeFrame Colors.gray
-          , ticks = Ticks.time Time.utc 7
+          , ticks = Ticks.time utc 7
           }
+
 -- UTILS
 
 
 datumToFloat : Datum -> Float
-datumToFloat = toFloat << Time.posixToMillis << .time
+datumToFloat = toFloat << posixToMillis << .time
+
+datumToTimeString : Datum -> String
+datumToTimeString = String.left 10 << fromTime << .time
 
 round100 : Float -> Float
 round100 float =
   toFloat (round (float * 100)) / 100
-
