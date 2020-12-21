@@ -306,7 +306,9 @@ view model =
                     let total = endDatum.co2-startDatum.co2 in
                     [ chart1 model
                     , chart2 model
-                    , text ("Please select or enter time interval: ")
+                    , text ("The horizontal line at "++String.fromFloat model.offset++" Mt signifies the amount of Co2 that has already been offset today.")
+                    , text ("\nCalculated from the Genesis block at January 3, 2009, this means we've offset Bitcoin's history approximately until "++findOffsetDate model++".")
+                    , text ("\nPlease select or enter time interval: ")
                     , input [ placeholder s, value s, onInput ChangeStart][]
                     , input [ placeholder e, value e, onInput ChangeEnd][]
                  --   , chartZoom model startDatum endDatum
@@ -322,7 +324,7 @@ view model =
                     case String.toFloat model.btcS of
                       Nothing -> []
                       Just btc -> [ text ("\nThis is equivalent to "++(String.fromFloat <| round100 <| total*btc/21)
-                                       ++" t Co2.\nHappy offsetting, and don't forget to tell us abut it so we can keep count!") ]
+                                       ++" t Co2.\nHappy offsetting, and don't forget to tell us about it so we can keep count!") ]
 
 
                 _       -> [ chart1 model
@@ -489,3 +491,14 @@ datumToTimeString = String.left 10 << fromTime << .time
 round100 : Float -> Float
 round100 float =
   toFloat (round (float * 100)) / 100
+
+findOffsetDate : Model -> String
+findOffsetDate model = let fOD s l = case l of
+                                         [] -> s
+                                         x::xs -> if x.co2 < model.offset
+                                                 then fOD (datumToTimeString x) xs
+                                                 else s
+                       in
+                           case model.data of
+                               Err _ -> "(data error)"
+                               Ok d  -> fOD "2009-03-01" d
