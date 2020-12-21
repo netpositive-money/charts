@@ -132,6 +132,7 @@ getSelectionStart hovered model =
     Just s ->  s
     Nothing -> hovered
 
+setSelectionString : Datum -> Datum -> Model -> Model
 setSelectionString start end model =
   { model | startString = start |> datumToTimeString
           , endString   = end |> datumToTimeString
