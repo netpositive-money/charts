@@ -86,7 +86,7 @@ init =
     , data = Err "nothing read yet"
     , compound = Err "nothing read yet"
     , factor = 1.34 --ktCo2/day/Twh/year
-    , offset = 0.1 -- MtCo2
+    , offset = 0.049 -- MtCo2
     , hovered = Nothing
     , selection = emptySelection
     , dragging = False
@@ -321,7 +321,7 @@ view model =
                     case String.toFloat model.btcS of
                       Nothing -> []
                       Just btc -> [ text ("\nThis is equivalent to "++(String.fromFloat <| round100 <| total*btc/21)
-                                       ++" t Co2.\nHappy offsetting, and don't forget to tell us, so we can keep count!") ]
+                                       ++" t Co2.\nHappy offsetting, and don't forget to tell us abut it so we can keep count!") ]
 
 
                 _       -> [ chart1 model
@@ -393,7 +393,7 @@ junkConfig : Model -> Junk.Config Datum msg
 junkConfig model =
   Junk.custom <| \system ->
     { below = below system model.selection
-    , above = above system model.hovered
+    , above = above system model.hovered model.offset
     , html = []
     }
 
@@ -410,59 +410,15 @@ below system selection =
       []
 
 
-above : Coordinate.System -> Maybe Datum -> List (Svg.Svg msg)
-above system maybeHovered =
+above : Coordinate.System -> Maybe Datum -> Float -> List (Svg.Svg msg)
+above system maybeHovered offset =
+    Junk.horizontal system [] offset ::
   case maybeHovered of
     Just hovered ->
       [ Junk.vertical system [] (datumToFloat hovered) ]
 
     Nothing ->
       []
-
-
-
--- ZOOM CHART
-
-
-chartZoom : Model -> Datum -> Datum -> Html.Html Msg
-chartZoom model start end = case  model.compound of
-                                Ok data ->
-                                    LineChart.viewCustom
-                                        (chartConfig
-                                             { y=yAxis2
-                                             , area=Area.default
-                                             , range = xAxisRangeConfig start end
-                                             , junk =
-                                                 Junk.hoverOne model.hinted
-                                                     [ ( "date", datumToTimeString )
-                                                     , ( "Mt", String.fromFloat << round100 << .co2 )
-                                                     ]
-                                             , events = Events.hoverOne Hint
-                                             , legends = Legends.none
-                                             , dots = Dots.hoverOne model.hinted
-                                             , id = "line-chart-zoom"
-                                             }
-                                        )
-                                    [ LineChart.line Colors.green Dots.circle "CO2 total" data ]
-                                Err e -> text e
-
-
-xAxisRangeConfig : Datum -> Datum -> Range.Config
-xAxisRangeConfig startDatum endDatum =
-  let
-    s=datumToFloat startDatum
-    e=datumToFloat endDatum
-    start =
-      min s e
-
-    end =
-      if s == e
-        then s + 1
-        else max s e
-  in
-  Range.window start end
-
-
 
 
 -- VIEW CHART
@@ -504,10 +460,10 @@ chartConfig { y, range, junk, events, legends, dots, id, area } =
     }
 
 yAxis1 : Axis.Config Datum Msg
-yAxis1 = Axis.default 600 "kt/day" .co2
+yAxis1 = Axis.full 600 "kt/day" .co2
 
 yAxis2 : Axis.Config Datum Msg
-yAxis2 = Axis.default 600 "Mt" .co2
+yAxis2 = Axis.full 600 "Mt" .co2
 
 
 xAxis : Range.Config -> Axis.Config Datum Msg
@@ -516,7 +472,7 @@ xAxis range = Axis.custom
           , variable = Just << datumToFloat
           , pixels = 1200
           , range = range
-          , axisLine = AxisLine.rangeFrame Colors.gray
+          , axisLine = AxisLine.full Colors.gray
           , ticks = Ticks.time utc 7
           }
 
