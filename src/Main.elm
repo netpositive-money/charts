@@ -74,7 +74,7 @@ type alias Model =
 type alias Selection =
     { start : Maybe Datum
     , end : Maybe Datum
-    }
+    } ---beware, start might be later than end!
 
 
 type alias Data =
@@ -491,7 +491,7 @@ view model =
                         ( Just startDatum, Just endDatum ) ->
                             let
                                 total =
-                                    endDatum.amount - startDatum.amount
+                                    abs(endDatum.amount - startDatum.amount)
                             in
                             [ chart1 model
                             , chart2 model
@@ -520,7 +520,7 @@ view model =
                                                     co2perBtcIn l startDatum endDatum
                                             in
                                             [ text
-                                                ("\nPer Bitcoin when divided by the total amount in existence at every day in the interval:"
+                                                ("\nPer Bitcoin when divided by the total amount in existence at every day in the interval: "
                                                     ++ (String.fromFloat <| round100 <| perBtcAmount)
                                                 )
                                             ]
@@ -767,4 +767,4 @@ co2perBtcIn l startDatum endDatum =
                 Just d ->
                     d.amount
     in
-    findAmount endDatum - findAmount startDatum
+    abs(findAmount endDatum - findAmount startDatum)
