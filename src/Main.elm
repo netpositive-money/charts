@@ -1,11 +1,14 @@
 module Main exposing (main)
 
 import Browser
+import Browser.Dom exposing (getViewport)
+import Browser.Dom exposing (Viewport)
+import Browser.Events exposing (onResize)
 import Csv
 import Html exposing (input, p, text)
 import Html.Attributes exposing (placeholder, style, value)
 import Html.Events exposing (onInput)
-import Http exposing (fractionReceived)
+import Http
 import Iso8601 exposing (fromTime, toTime)
 import LineChart
 import LineChart.Area as Area
@@ -29,8 +32,8 @@ import List.Extra exposing (find)
 import String exposing (left)
 import Svg
 import Svg.Attributes
+import Task
 import Time exposing (Posix, millisToPosix, posixToMillis, utc)
-
 
 main : Program () Model Msg
 main =
@@ -38,9 +41,12 @@ main =
         { init = \_ -> init
         , update = update
         , view = view
-        , subscriptions = always Sub.none
+        , subscriptions = subscriptions -- always Sub.none
         }
 
+subscriptions : Model -> Sub Msg
+subscriptions model =
+    Sub.batch [ onResize SetScreenSize ]
 
 
 -- MODEL
@@ -60,6 +66,8 @@ type alias Model =
     , startString : String
     , endString : String
     , btcS : String
+    , width : Int
+    , height : Int
     }
 
 
@@ -103,6 +111,8 @@ init =
       , startString = "YYYY-MM-DD"
       , endString = "YYYY-MM-DD"
       , btcS = ""
+      , width = 1280
+      , height = 720
       }
     , Cmd.batch
         [ Http.get
@@ -113,6 +123,9 @@ init =
             { url = "https://api.blockchain.info/charts/total-bitcoins?timespan=100years&format=csv&cors=true"
             , expect = Http.expectString GotBtc
             }
+        , Task.perform (\vp -> let get = (\s -> s vp.viewport |> round) in
+                               SetScreenSize (get .width) (get .height))
+                                getViewport
         ]
     )
 
@@ -164,12 +177,13 @@ setSelectionString start end model =
 type Msg
     = GotText (Result Http.Error String)
     | GotBtc (Result Http.Error String)
+    | SetScreenSize Int Int
         -- Chart 1
-    | Hold (List Datum)
-    | Move (List Datum)
-    | Drop (List Datum)
-    | LeaveChart (List Datum)
-    | LeaveContainer (List Datum)
+    | Hold Data
+    | Move Data
+    | Drop Data
+    | LeaveChart Data
+    | LeaveContainer Data
       -- Chart 2
     | Hint (Maybe Datum)
     | ChangeStart String
@@ -236,6 +250,10 @@ update msg model =
                 Err e ->
 
                     ( { model | totalBtc = Err "Error loading blockchain data" }, Cmd.none )
+
+        SetScreenSize w h -> { model | height = h
+                                     , width = w }
+                             |> addCmd Cmd.none
 
         Hold point ->
             model
@@ -390,6 +408,7 @@ mkPerBtcComp nd amts =
                     Ok summedList
 
 
+firstAmount : Data -> Posix -> Float
 firstAmount ls t =
     case find (\d -> fromTime d.time >= fromTime t) ls of
         Just d ->
@@ -543,7 +562,7 @@ chart1 model =
         Ok data ->
             LineChart.viewCustom
                 (chartConfig
-                    { y = yAxis1
+                    { y = yAxis1 (model.height)
                     , area = Area.normal 0.5
                     , range = Range.default
                     , junk =
@@ -555,6 +574,7 @@ chart1 model =
                     , legends = Legends.default
                     , dots = Dots.custom (Dots.full 0)
                     , id = "line-chart"
+                    , width = model.width
                     }
                 )
                 [ LineChart.line Colors.pink Dots.circle "CO2" data ]
@@ -569,7 +589,7 @@ chart2 model =
         Ok data ->
             LineChart.viewCustom
                 (chartConfig
-                    { y = yAxis2
+                    { y = yAxis2 (model.height)
                     , area = Area.default
                     , range = Range.default
                     , junk = junkConfig model
@@ -584,6 +604,7 @@ chart2 model =
                             ]
                     , dots = Dots.custom (Dots.full 0)
                     , id = "line-chart"
+                    , width = model.width
                     }
                 )
                 [ LineChart.line Colors.blue Dots.circle "CO2 total" data ]
@@ -643,13 +664,14 @@ type alias Config =
     , dots : Dots.Config Datum
     , id : String
     , area : Area.Config
+    , width : Int
     }
 
 
 chartConfig : Config -> LineChart.Config Datum Msg
-chartConfig { y, range, junk, events, legends, dots, id, area } =
+chartConfig { y, range, junk, events, legends, dots, id, area, width } =
     { y = y
-    , x = xAxis range
+    , x = xAxis range width
     , container =
         Container.custom
             { attributesHtml = [ Html.Attributes.style "font-family" "monospace" ]
@@ -670,22 +692,22 @@ chartConfig { y, range, junk, events, legends, dots, id, area } =
     }
 
 
-yAxis1 : Axis.Config Datum Msg
-yAxis1 =
-    Axis.full 600 "kt/day" .amount
+yAxis1 : Int -> Axis.Config Datum Msg
+yAxis1 h =
+    Axis.full (h//2) "kt/day" .amount
 
 
-yAxis2 : Axis.Config Datum Msg
-yAxis2 =
-    Axis.full 600 "Mt" .amount
+yAxis2 : Int -> Axis.Config Datum Msg
+yAxis2 h =
+    Axis.full (h//2) "Mt" .amount
 
 
-xAxis : Range.Config -> Axis.Config Datum Msg
-xAxis range =
+xAxis : Range.Config -> Int -> Axis.Config Datum Msg
+xAxis range w =
     Axis.custom
         { title = Title.default "date"
         , variable = Just << datumToFloat
-        , pixels = 1200
+        , pixels = w
         , range = range
         , axisLine = AxisLine.full Colors.gray
         , ticks = Ticks.time utc 7
